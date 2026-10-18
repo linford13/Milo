@@ -9,7 +9,7 @@ from pypdf import PdfReader
 from google import genai
 from google.genai import types
 
-# 1. Safe Icon Handling (Native Streamlit)
+# 1. Native Page & Icon Setup
 icon_filename = "milo_icon.png"
 if os.path.exists(icon_filename):
     try:
@@ -21,12 +21,14 @@ else:
 
 st.set_page_config(page_title="MILO", page_icon=app_icon, layout="wide")
 
-# 2. Custom CSS Styles
+# 2. Targeted CSS
 st.markdown(
     """
     <style>
     .stApp { background: #0b0f17; color: #f1f5f9; }
-    .block-container { padding-top: 1.8rem; max-width: 1200px; }
+    .block-container { padding-top: 1.5rem; max-width: 1200px; }
+    
+    /* Centered Pill Chat Bar */
     [data-testid='stChatInput'] {
         background: #fceee8 !important;
         border-radius: 32px !important;
@@ -41,11 +43,13 @@ st.markdown(
     [data-testid='stChatInput'] textarea::placeholder { color: #6e655f !important; opacity: 1 !important; }
     [data-testid='stChatInput'] button { color: #18181b !important; }
     .reply-txt { text-align: center; color: #e2e8f0; font-size: 0.95rem; margin: 0 auto 1rem auto; max-width: 820px; }
+    
+    /* Left Sticky Note */
     .sticky {
         position: relative;
         background: #fbf7dc;
         color: #27272a;
-        padding: 26px 18px 18px;
+        padding: 24px 18px 18px;
         border-radius: 4px;
         box-shadow: 0 12px 24px rgba(0,0,0,0.5);
         transform: rotate(-1.5deg);
@@ -65,18 +69,32 @@ st.markdown(
         border-radius: 50%;
         box-shadow: 0 3px 6px rgba(0,0,0,0.5);
     }
-    .stitle { font-weight: 700; border-bottom: 2px dashed #d1c79f; padding-bottom: 6px; margin-bottom: 10px; text-align: center; }
+    .stitle { font-weight: 700; border-bottom: 2px dashed #d1c79f; padding-bottom: 6px; margin-bottom: 10px; text-align: center; font-size: 1rem; }
     .sitem { font-size: 0.86rem; margin-bottom: 8px; padding-bottom: 5px; border-bottom: 1px dotted #e2d9b5; }
-    [data-testid='stVerticalBlockBorderWrapper'] {
-        border: 2.5px solid #ffffff !important;
-        border-radius: 28px !important;
-        padding: 18px !important;
+    
+    /* Right Discussion Slate (Scoped height & border) */
+    [data-testid="stVerticalBlockBorderWrapper"]:has(.slate-marker) {
+        border: 2px solid #ffffff !important;
+        border-radius: 24px !important;
+        min-height: 340px !important;
         height: 340px !important;
-        max-height: 340px !important;
         background: #0b0f17 !important;
-        overflow: hidden !important;
+        padding: 16px 18px !important;
         box-sizing: border-box !important;
+        overflow: hidden !important;
     }
+    
+    /* Internal Slate Scroll */
+    .scrollable-disc {
+        height: 245px;
+        max-height: 245px;
+        overflow-y: auto;
+        padding-right: 6px;
+        margin-top: 10px;
+    }
+    .scrollable-disc::-webkit-scrollbar { width: 5px; }
+    .scrollable-disc::-webkit-scrollbar-thumb { background: #334155; border-radius: 10px; }
+    
     div[data-baseweb='select']>div {
         background: #1e293b !important;
         color: #f8fafc !important;
@@ -84,9 +102,7 @@ st.markdown(
         border: 1px solid #334155 !important;
         font-weight: 600;
     }
-    .scrollable-disc { height: 240px; max-height: 240px; overflow-y: auto; padding-right: 6px; margin-top: 6px; }
-    .scrollable-disc::-webkit-scrollbar { width: 5px; }
-    .scrollable-disc::-webkit-scrollbar-thumb { background: #334155; border-radius: 10px; }
+    
     @media (max-width: 640px) {
       .sticky { transform: rotate(-0.5deg) !important; }
     }
@@ -97,7 +113,7 @@ st.markdown(
 
 KEY = st.secrets.get("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY")
 if not KEY:
-    st.error("Missing GEMINI_API_KEY in Secrets. Please add it to your Streamlit App settings.")
+    st.error("Missing GEMINI_API_KEY in Secrets. Add it in your Streamlit Cloud Settings.")
     st.stop()
 
 ai_client = genai.Client(api_key=KEY)
@@ -124,6 +140,37 @@ class MiloPayload(BaseModel):
     topics: List[ExtractedTopic] = Field(default_factory=list)
     dues: List[ExtractedDue] = Field(default_factory=list)
 
+# Dynamic Discovery: Queries available models to prevent 404 NOT_FOUND
+@st.cache_resource(show_spinner=False)
+def discover_active_models():
+    found_models = []
+    try:
+        for m in ai_client.models.list():
+            name = m.name if hasattr(m, "name") else str(m)
+            clean_name = name.replace("models/", "")
+            actions = getattr(m, "supported_actions", []) or getattr(m, "supported_generation_methods", [])
+            if not actions or "generateContent" in actions:
+                found_models.append(clean_name)
+    except Exception:
+        pass
+    
+    priority_order = [
+        "gemini-2.0-flash",
+        "gemini-2.5-flash",
+        "gemini-2.0-flash-exp",
+        "gemini-1.5-flash-latest",
+        "gemini-1.5-flash-002",
+        "gemini-1.5-flash-001",
+        "gemini-1.5-flash",
+        "gemini-2.0-pro-exp-02-05",
+        "gemini-1.5-pro"
+    ]
+    
+    verified = [p for p in priority_order if p in found_models]
+    if not verified:
+        verified = [f for f in found_models if "flash" in f.lower()] or found_models
+    return verified if verified else ["gemini-2.0-flash", "gemini-1.5-flash"]
+
 def parse_with_milo(content_items: list):
     today_iso = date.today().isoformat()
     prompt_parts = [
@@ -137,15 +184,14 @@ def parse_with_milo(content_items: list):
     ]
     sys_prompt = "\n".join(prompt_parts)
     
-    # Valid production Gemini models in fallback order
-    models = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
+    candidate_models = discover_active_models()
     last_err = None
 
-    for m in models:
+    for model_name in candidate_models:
         for attempt in range(2):
             try:
                 response = ai_client.models.generate_content(
-                    model=m,
+                    model=model_name,
                     contents=[sys_prompt] + content_items,
                     config=types.GenerateContentConfig(
                         response_mime_type="application/json",
@@ -158,17 +204,15 @@ def parse_with_milo(content_items: list):
             except Exception as e:
                 last_err = e
                 err_str = str(e).lower()
-                # If capacity or rate limit issue, pause with backoff and retry
                 if any(x in err_str for x in ["503", "429", "unavailable", "resource_exhausted"]) and attempt < 1:
                     time.sleep(2.0)
                     continue
-                # If model not supported or fatal error on this model, step to next model
                 break
 
     st.error(f"MILO AI Error: {last_err}")
     return None
 
-# Clean MILO logo header
+# Clean MILO vector header
 logo_svg = """
 <div style="display:flex;align-items:center;margin-bottom:0.8rem;">
   <svg width="200" height="65" viewBox="0 0 240 75" style="user-select:none;">
@@ -234,6 +278,7 @@ st.write("")
 
 left, right = st.columns([1, 1.8], gap="large")
 
+# Left Column: Sticky Note
 with left:
     with sqlite3.connect(DB_FILE) as conn:
         dues = pd.read_sql_query("SELECT * FROM dues WHERE status='Pending' ORDER BY due_date ASC LIMIT 5", conn)
@@ -251,20 +296,29 @@ with left:
                         conn.execute("UPDATE dues SET status='Done' WHERE id=?", (row_id,))
                     st.rerun()
 
+# Right Column: Discussion Slate with Integrated Controls & Reset Button
 with right:
     with st.container(border=True):
+        st.markdown("<span class='slate-marker'></span>", unsafe_allow_html=True)
         td = date.today()
         mon = td - timedelta(days=td.weekday())
         sun = mon + timedelta(days=6)
         
-        sc1, sc2 = st.columns([1.2, 1.2])
+        # Header Controls: View Selector, Date Range, and Direct Reset Button
+        sc1, sc2, sc3 = st.columns([1.6, 1.3, 0.9])
         with sc1:
             mode = st.selectbox("View", ["Today's Discussion", "This Week (Mon - Sun)", "Custom Range"], label_visibility="collapsed")
         
         drange = None
-        if mode == "Custom Range":
-            with sc2:
+        with sc2:
+            if mode == "Custom Range":
                 drange = st.date_input("Date Range", value=(td - timedelta(days=7), td), max_value=td, label_visibility="collapsed")
+        
+        with sc3:
+            if st.button("🗑️ Reset", help="Clear all logged topics", use_container_width=True):
+                with sqlite3.connect(DB_FILE) as conn:
+                    conn.execute("DELETE FROM topics")
+                st.rerun()
 
         with sqlite3.connect(DB_FILE) as conn:
             if mode == "Today's Discussion":
@@ -274,4 +328,30 @@ with right:
             else:
                 if drange and isinstance(drange, (tuple, list)):
                     s_d = drange[0]
-                    e_d = drange[1] if len(drange) > 1 else s_
+                    e_d = drange[1] if len(drange) > 1 else s_d
+                    df = pd.read_sql_query("SELECT * FROM topics WHERE logged_date BETWEEN ? AND ? ORDER BY logged_date DESC, id DESC", conn, params=(str(min(s_d, e_d)), str(max(s_d, e_d))))
+                else:
+                    df = pd.DataFrame(columns=["subject", "topic", "module", "logged_date"])
+        
+        items_html = "".join([
+            f"<div style='margin-bottom:8px;border-bottom:1px solid #1e293b;padding-bottom:5px;font-size:0.86rem'>"
+            f"<b>[{r['subject']}]</b> ({r['module']}): {r['topic']} "
+            f"<small style='color:#64748b'>[{r['logged_date']}]</small></div>"
+            for _, r in df.iterrows()
+        ]) or "<div style='text-align:center;padding:50px 10px;color:#64748b;font-size:0.88rem'>No discussions logged for this period yet.<br><span style='font-size:0.78rem;color:#475569;'>Type or drop class notes above to log topics.</span></div>"
+        
+        st.markdown(f"<div class='scrollable-disc'>{items_html}</div>", unsafe_allow_html=True)
+
+# Visible Bottom Action Bar (Ensures reset options are never lost)
+st.write("")
+b1, b2, _ = st.columns([1.2, 1.4, 2.0])
+with b1:
+    if st.button("🗑️ Clear All Discussions", use_container_width=True):
+        with sqlite3.connect(DB_FILE) as conn:
+            conn.execute("DELETE FROM topics")
+        st.rerun()
+with b2:
+    if st.button("✓ Clear Completed Dues", use_container_width=True):
+        with sqlite3.connect(DB_FILE) as conn:
+            conn.execute("DELETE FROM dues WHERE status='Done'")
+        st.rerun()
