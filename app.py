@@ -9,7 +9,7 @@ from pypdf import PdfReader
 from google import genai
 from google.genai import types
 
-# 1. Native Page & Icon Setup
+# 1. Native Page Configuration & Icon Setup
 icon_filename = "milo_icon.png"
 if os.path.exists(icon_filename):
     try:
@@ -21,14 +21,14 @@ else:
 
 st.set_page_config(page_title="MILO", page_icon=app_icon, layout="wide")
 
-# 2. Targeted CSS
+# 2. Scoped Styling (No destructive global height overrides)
 st.markdown(
     """
     <style>
     .stApp { background: #0b0f17; color: #f1f5f9; }
     .block-container { padding-top: 1.5rem; max-width: 1200px; }
     
-    /* Centered Pill Chat Bar */
+    /* Top Pill Chat Input */
     [data-testid='stChatInput'] {
         background: #fceee8 !important;
         border-radius: 32px !important;
@@ -53,10 +53,9 @@ st.markdown(
         border-radius: 4px;
         box-shadow: 0 12px 24px rgba(0,0,0,0.5);
         transform: rotate(-1.5deg);
-        height: 340px;
+        min-height: 330px;
         box-sizing: border-box;
         font-family: cursive, sans-serif;
-        overflow: hidden;
     }
     .pin {
         position: absolute;
@@ -72,25 +71,13 @@ st.markdown(
     .stitle { font-weight: 700; border-bottom: 2px dashed #d1c79f; padding-bottom: 6px; margin-bottom: 10px; text-align: center; font-size: 1rem; }
     .sitem { font-size: 0.86rem; margin-bottom: 8px; padding-bottom: 5px; border-bottom: 1px dotted #e2d9b5; }
     
-    /* Right Discussion Slate (Scoped height & border) */
-    [data-testid="stVerticalBlockBorderWrapper"]:has(.slate-marker) {
-        border: 2px solid #ffffff !important;
-        border-radius: 24px !important;
-        min-height: 340px !important;
-        height: 340px !important;
-        background: #0b0f17 !important;
-        padding: 16px 18px !important;
-        box-sizing: border-box !important;
-        overflow: hidden !important;
-    }
-    
-    /* Internal Slate Scroll */
+    /* Internal Scroll Viewport for Slate */
     .scrollable-disc {
-        height: 245px;
-        max-height: 245px;
+        height: 220px;
+        max-height: 220px;
         overflow-y: auto;
         padding-right: 6px;
-        margin-top: 10px;
+        margin-top: 8px;
     }
     .scrollable-disc::-webkit-scrollbar { width: 5px; }
     .scrollable-disc::-webkit-scrollbar-thumb { background: #334155; border-radius: 10px; }
@@ -111,18 +98,22 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-KEY = st.secrets.get("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY")
+# 3. Environment & Database Setup
+RAW_KEY = st.secrets.get("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY") or ""
+KEY = RAW_KEY.strip().strip("'").strip('"')
+
 if not KEY:
-    st.error("Missing GEMINI_API_KEY in Secrets. Add it in your Streamlit Cloud Settings.")
+    st.error("Missing GEMINI_API_KEY in Secrets. Please add it in your Streamlit App settings.")
     st.stop()
 
 ai_client = genai.Client(api_key=KEY)
 DB_FILE = "milo_study.db"
 
-with sqlite3.connect(DB_FILE) as conn:
+with sqlite3.connect(DB_FILE, check_same_thread=False) as conn:
     conn.execute("CREATE TABLE IF NOT EXISTS topics(id INTEGER PRIMARY KEY AUTOINCREMENT, subject TEXT, topic TEXT, module TEXT, logged_date TEXT)")
     conn.execute("CREATE TABLE IF NOT EXISTS dues(id INTEGER PRIMARY KEY AUTOINCREMENT, subject TEXT, task TEXT, due_date TEXT, status TEXT DEFAULT 'Pending')")
 
+# 4. Pydantic Extraction Schemas
 class ExtractedTopic(BaseModel):
     subject: str = Field(default="General")
     topic: str = Field(default="")
@@ -140,37 +131,6 @@ class MiloPayload(BaseModel):
     topics: List[ExtractedTopic] = Field(default_factory=list)
     dues: List[ExtractedDue] = Field(default_factory=list)
 
-# Dynamic Discovery: Queries available models to prevent 404 NOT_FOUND
-@st.cache_resource(show_spinner=False)
-def discover_active_models():
-    found_models = []
-    try:
-        for m in ai_client.models.list():
-            name = m.name if hasattr(m, "name") else str(m)
-            clean_name = name.replace("models/", "")
-            actions = getattr(m, "supported_actions", []) or getattr(m, "supported_generation_methods", [])
-            if not actions or "generateContent" in actions:
-                found_models.append(clean_name)
-    except Exception:
-        pass
-    
-    priority_order = [
-        "gemini-2.0-flash",
-        "gemini-2.5-flash",
-        "gemini-2.0-flash-exp",
-        "gemini-1.5-flash-latest",
-        "gemini-1.5-flash-002",
-        "gemini-1.5-flash-001",
-        "gemini-1.5-flash",
-        "gemini-2.0-pro-exp-02-05",
-        "gemini-1.5-pro"
-    ]
-    
-    verified = [p for p in priority_order if p in found_models]
-    if not verified:
-        verified = [f for f in found_models if "flash" in f.lower()] or found_models
-    return verified if verified else ["gemini-2.0-flash", "gemini-1.5-flash"]
-
 def parse_with_milo(content_items: list):
     today_iso = date.today().isoformat()
     prompt_parts = [
@@ -184,14 +144,22 @@ def parse_with_milo(content_items: list):
     ]
     sys_prompt = "\n".join(prompt_parts)
     
-    candidate_models = discover_active_models()
+    # Priority model sequence covering v1 and v1beta production endpoints
+    candidate_models = [
+        "gemini-2.0-flash",
+        "gemini-2.5-flash",
+        "gemini-1.5-flash",
+        "gemini-1.5-flash-latest",
+        "gemini-1.5-pro"
+    ]
+    
     last_err = None
 
-    for model_name in candidate_models:
+    for m in candidate_models:
         for attempt in range(2):
             try:
                 response = ai_client.models.generate_content(
-                    model=model_name,
+                    model=m,
                     contents=[sys_prompt] + content_items,
                     config=types.GenerateContentConfig(
                         response_mime_type="application/json",
@@ -204,15 +172,27 @@ def parse_with_milo(content_items: list):
             except Exception as e:
                 last_err = e
                 err_str = str(e).lower()
-                if any(x in err_str for x in ["503", "429", "unavailable", "resource_exhausted"]) and attempt < 1:
+                if any(x in err_str for x in ["503", "429", "resource_exhausted", "unavailable"]) and attempt < 1:
                     time.sleep(2.0)
                     continue
+                # If model is 404 on this key/endpoint, immediately try next candidate model
                 break
 
-    st.error(f"MILO AI Error: {last_err}")
+    # If all models returned 404, provide explicit diagnostic guidance
+    if "404" in str(last_err):
+        st.error(
+            "⚠️ **API Key Configuration Error (404 NOT_FOUND)**\n\n"
+            "Your Google API Key does not have the **Generative Language API** enabled on its Google Cloud Project.\n\n"
+            "👉 **How to fix in 10 seconds:**\n"
+            "1. Visit [aistudio.google.com/apikey](https://aistudio.google.com/apikey)\n"
+            "2. Click **Create API key** (AI Studio keys have the API enabled by default).\n"
+            "3. Paste the new key into your Streamlit Cloud **Secrets** under `GEMINI_API_KEY`."
+        )
+    else:
+        st.error(f"MILO AI Error: {last_err}")
     return None
 
-# Clean MILO vector header
+# 5. Header Logo
 logo_svg = """
 <div style="display:flex;align-items:center;margin-bottom:0.8rem;">
   <svg width="200" height="65" viewBox="0 0 240 75" style="user-select:none;">
@@ -227,7 +207,7 @@ logo_svg = """
 """
 st.markdown(logo_svg, unsafe_allow_html=True)
 
-# Centered Chat Bar
+# 6. Centered Chat Bar
 _, chat_col, _ = st.columns([0.1, 3.8, 0.1])
 with chat_col:
     prompt = st.chat_input(
@@ -266,7 +246,7 @@ if prompt:
                     st.session_state["reply"] = res.assistant_reply or "Hey! Send class notes or deadlines anytime."
                 else:
                     st.session_state["reply"] = ""
-                    with sqlite3.connect(DB_FILE) as conn:
+                    with sqlite3.connect(DB_FILE, check_same_thread=False) as conn:
                         for t in res.topics:
                             log_d = t.logged_date.strip() if t.logged_date and t.logged_date.strip() else str(date.today())
                             conn.execute("INSERT INTO topics(subject,topic,module,logged_date) VALUES(?,?,?,?)", (t.subject, t.topic, t.module or "General", log_d))
@@ -276,11 +256,12 @@ if prompt:
 
 st.write("")
 
+# 7. Main Dashboard Grid
 left, right = st.columns([1, 1.8], gap="large")
 
 # Left Column: Sticky Note
 with left:
-    with sqlite3.connect(DB_FILE) as conn:
+    with sqlite3.connect(DB_FILE, check_same_thread=False) as conn:
         dues = pd.read_sql_query("SELECT * FROM dues WHERE status='Pending' ORDER BY due_date ASC LIMIT 5", conn)
     rows = "".join([
         f"<div class='sitem'><b>[{r['subject']}]</b> {r['task']}<br><span style='color:#dc2626'>Due: {r['due_date']}</span></div>"
@@ -292,66 +273,12 @@ with left:
             for _, r in dues.iterrows():
                 row_id = int(r["id"])
                 if st.button(f"✓ {r['subject']}: {str(r['task'])[:15]}", key=f"d{row_id}", use_container_width=True):
-                    with sqlite3.connect(DB_FILE) as conn:
+                    with sqlite3.connect(DB_FILE, check_same_thread=False) as conn:
                         conn.execute("UPDATE dues SET status='Done' WHERE id=?", (row_id,))
                     st.rerun()
 
-# Right Column: Discussion Slate with Integrated Controls & Reset Button
+# Right Column: Discussion Slate with Native Border & Header Controls
 with right:
     with st.container(border=True):
-        st.markdown("<span class='slate-marker'></span>", unsafe_allow_html=True)
         td = date.today()
-        mon = td - timedelta(days=td.weekday())
-        sun = mon + timedelta(days=6)
-        
-        # Header Controls: View Selector, Date Range, and Direct Reset Button
-        sc1, sc2, sc3 = st.columns([1.6, 1.3, 0.9])
-        with sc1:
-            mode = st.selectbox("View", ["Today's Discussion", "This Week (Mon - Sun)", "Custom Range"], label_visibility="collapsed")
-        
-        drange = None
-        with sc2:
-            if mode == "Custom Range":
-                drange = st.date_input("Date Range", value=(td - timedelta(days=7), td), max_value=td, label_visibility="collapsed")
-        
-        with sc3:
-            if st.button("🗑️ Reset", help="Clear all logged topics", use_container_width=True):
-                with sqlite3.connect(DB_FILE) as conn:
-                    conn.execute("DELETE FROM topics")
-                st.rerun()
-
-        with sqlite3.connect(DB_FILE) as conn:
-            if mode == "Today's Discussion":
-                df = pd.read_sql_query("SELECT * FROM topics WHERE logged_date=? ORDER BY id DESC", conn, params=(str(td),))
-            elif mode == "This Week (Mon - Sun)":
-                df = pd.read_sql_query("SELECT * FROM topics WHERE logged_date BETWEEN ? AND ? ORDER BY id DESC", conn, params=(str(mon), str(sun)))
-            else:
-                if drange and isinstance(drange, (tuple, list)):
-                    s_d = drange[0]
-                    e_d = drange[1] if len(drange) > 1 else s_d
-                    df = pd.read_sql_query("SELECT * FROM topics WHERE logged_date BETWEEN ? AND ? ORDER BY logged_date DESC, id DESC", conn, params=(str(min(s_d, e_d)), str(max(s_d, e_d))))
-                else:
-                    df = pd.DataFrame(columns=["subject", "topic", "module", "logged_date"])
-        
-        items_html = "".join([
-            f"<div style='margin-bottom:8px;border-bottom:1px solid #1e293b;padding-bottom:5px;font-size:0.86rem'>"
-            f"<b>[{r['subject']}]</b> ({r['module']}): {r['topic']} "
-            f"<small style='color:#64748b'>[{r['logged_date']}]</small></div>"
-            for _, r in df.iterrows()
-        ]) or "<div style='text-align:center;padding:50px 10px;color:#64748b;font-size:0.88rem'>No discussions logged for this period yet.<br><span style='font-size:0.78rem;color:#475569;'>Type or drop class notes above to log topics.</span></div>"
-        
-        st.markdown(f"<div class='scrollable-disc'>{items_html}</div>", unsafe_allow_html=True)
-
-# Visible Bottom Action Bar (Ensures reset options are never lost)
-st.write("")
-b1, b2, _ = st.columns([1.2, 1.4, 2.0])
-with b1:
-    if st.button("🗑️ Clear All Discussions", use_container_width=True):
-        with sqlite3.connect(DB_FILE) as conn:
-            conn.execute("DELETE FROM topics")
-        st.rerun()
-with b2:
-    if st.button("✓ Clear Completed Dues", use_container_width=True):
-        with sqlite3.connect(DB_FILE) as conn:
-            conn.execute("DELETE FROM dues WHERE status='Done'")
-        st.rerun()
+        mon = td
