@@ -9,87 +9,30 @@ from pypdf import PdfReader
 from google import genai
 from google.genai import types
 
-# 1. Native Page Configuration & Icon Setup
-icon_filename = "milo_icon.png"
-if os.path.exists(icon_filename):
-    try:
-        app_icon = Image.open(icon_filename)
-    except Exception:
-        app_icon = "📌"
-else:
-    app_icon = "📌"
+st.set_page_config(page_title="MILO", page_icon="📌", layout="wide")
 
-st.set_page_config(page_title="MILO", page_icon=app_icon, layout="wide")
-
-# 2. Scoped Styling (No destructive global height overrides)
 st.markdown(
     """
     <style>
-    .stApp { background: #0b0f17; color: #f1f5f9; }
-    .block-container { padding-top: 1.5rem; max-width: 1200px; }
-    
-    /* Top Pill Chat Input */
-    [data-testid='stChatInput'] {
-        background: #fceee8 !important;
-        border-radius: 32px !important;
-        padding: 6px 14px !important;
-        border: none !important;
-        box-shadow: none !important;
-        max-width: 820px;
-        margin: 0 auto 1rem auto;
-    }
-    [data-testid='stChatInput']>div { background: transparent !important; border: none !important; box-shadow: none !important; }
-    [data-testid='stChatInput'] textarea { color: #18181b !important; font-size: 1rem !important; }
-    [data-testid='stChatInput'] textarea::placeholder { color: #6e655f !important; opacity: 1 !important; }
-    [data-testid='stChatInput'] button { color: #18181b !important; }
-    .reply-txt { text-align: center; color: #e2e8f0; font-size: 0.95rem; margin: 0 auto 1rem auto; max-width: 820px; }
-    
-    /* Left Sticky Note */
-    .sticky {
-        position: relative;
-        background: #fbf7dc;
-        color: #27272a;
-        padding: 24px 18px 18px;
-        border-radius: 4px;
-        box-shadow: 0 12px 24px rgba(0,0,0,0.5);
-        transform: rotate(-1.5deg);
-        min-height: 330px;
-        box-sizing: border-box;
-        font-family: cursive, sans-serif;
-    }
-    .pin {
-        position: absolute;
-        top: -11px;
-        left: 50%;
-        transform: translateX(-50%);
-        width: 22px;
-        height: 22px;
-        background: radial-gradient(circle at 35% 35%, #ff4b4b, #8a0b0b);
-        border-radius: 50%;
-        box-shadow: 0 3px 6px rgba(0,0,0,0.5);
-    }
-    .stitle { font-weight: 700; border-bottom: 2px dashed #d1c79f; padding-bottom: 6px; margin-bottom: 10px; text-align: center; font-size: 1rem; }
-    .sitem { font-size: 0.86rem; margin-bottom: 8px; padding-bottom: 5px; border-bottom: 1px dotted #e2d9b5; }
-    
-    /* Internal Scroll Viewport for Slate */
-    .scrollable-disc {
-        height: 220px;
-        max-height: 220px;
-        overflow-y: auto;
-        padding-right: 6px;
-        margin-top: 8px;
-    }
-    .scrollable-disc::-webkit-scrollbar { width: 5px; }
-    .scrollable-disc::-webkit-scrollbar-thumb { background: #334155; border-radius: 10px; }
-    
-    div[data-baseweb='select']>div {
-        background: #1e293b !important;
-        color: #f8fafc !important;
-        border-radius: 10px !important;
-        border: 1px solid #334155 !important;
-        font-weight: 600;
-    }
-    
+    .stApp{background:#0b0f17;color:#f1f5f9}
+    .block-container{padding-top:1.8rem;max-width:1200px}
+    [data-testid='stChatInput']{background:#fceee8!important;border-radius:32px!important;padding:6px 14px!important;border:none!important;box-shadow:none!important;max-width:820px;margin:0 auto 1rem auto}
+    [data-testid='stChatInput']>div{background:transparent!important;border:none!important;box-shadow:none!important}
+    [data-testid='stChatInput'] textarea{color:#18181b!important;font-size:1rem!important}
+    [data-testid='stChatInput'] textarea::placeholder{color:#6e655f!important;opacity:1!important}
+    [data-testid='stChatInput'] button{color:#18181b!important}
+    .reply-txt{text-align:center;color:#e2e8f0;font-size:0.95rem;margin:0 auto 1rem auto;max-width:820px}
+    .sticky{position:relative;background:#fbf7dc;color:#27272a;padding:26px 18px 18px;border-radius:4px;
+    box-shadow:0 12px 24px rgba(0,0,0,.5);transform:rotate(-1.5deg);height:340px;box-sizing:border-box;font-family:cursive,sans-serif;overflow:hidden}
+    .pin{position:absolute;top:-11px;left:50%;transform:translateX(-50%);width:22px;height:22px;
+    background:radial-gradient(circle at 35% 35%,#ff4b4b,#8a0b0b);border-radius:50%;box-shadow:0 3px 6px rgba(0,0,0,.5)}
+    .stitle{font-weight:700;border-bottom:2px dashed #d1c79f;padding-bottom:6px;margin-bottom:10px;text-align:center}
+    .sitem{font-size:.86rem;margin-bottom:8px;padding-bottom:5px;border-bottom:1px dotted #e2d9b5}
+    .slate-box{border:2.5px solid #ffffff;border-radius:28px;padding:18px;height:340px;background:#0b0f17;box-sizing:border-box}
+    div[data-baseweb='select']>div{background:#1e293b!important;color:#f8fafc!important;border-radius:10px!important;border:1px solid #334155!important;font-weight:600}
+    .scrollable-disc{height:230px;max-height:230px;overflow-y:auto;padding-right:6px;margin-top:6px}
+    .scrollable-disc::-webkit-scrollbar{width:5px}
+    .scrollable-disc::-webkit-scrollbar-thumb{background:#334155;border-radius:10px}
     @media (max-width: 640px) {
       .sticky { transform: rotate(-0.5deg) !important; }
     }
@@ -98,22 +41,18 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-# 3. Environment & Database Setup
-RAW_KEY = st.secrets.get("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY") or ""
-KEY = RAW_KEY.strip().strip("'").strip('"')
-
+KEY = st.secrets.get("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY")
 if not KEY:
-    st.error("Missing GEMINI_API_KEY in Secrets. Please add it in your Streamlit App settings.")
+    st.error("Missing GEMINI_API_KEY in Secrets.")
     st.stop()
 
 ai_client = genai.Client(api_key=KEY)
 DB_FILE = "milo_study.db"
 
-with sqlite3.connect(DB_FILE, check_same_thread=False) as conn:
+with sqlite3.connect(DB_FILE) as conn:
     conn.execute("CREATE TABLE IF NOT EXISTS topics(id INTEGER PRIMARY KEY AUTOINCREMENT, subject TEXT, topic TEXT, module TEXT, logged_date TEXT)")
     conn.execute("CREATE TABLE IF NOT EXISTS dues(id INTEGER PRIMARY KEY AUTOINCREMENT, subject TEXT, task TEXT, due_date TEXT, status TEXT DEFAULT 'Pending')")
 
-# 4. Pydantic Extraction Schemas
 class ExtractedTopic(BaseModel):
     subject: str = Field(default="General")
     topic: str = Field(default="")
@@ -138,147 +77,4 @@ def parse_with_milo(content_items: list):
         "You are MILO, an academic tracker for a college student.",
         "Extract topics taught and upcoming dues from raw notes or files.",
         "Use 'General' if module is unknown.",
-        "Check notes for dates (e.g. 'yesterday', 'Oct 15'). Resolve into YYYY-MM-DD for 'logged_date'. If no date is mentioned, default logged_date to today (" + today_iso + ").",
-        "Convert relative due dates to YYYY-MM-DD. Use 'TBD' if unknown.",
-        "If input is casual chat, set has_academic_content=False and write a friendly response in assistant_reply."
-    ]
-    sys_prompt = "\n".join(prompt_parts)
-    
-    # Priority model sequence covering v1 and v1beta production endpoints
-    candidate_models = [
-        "gemini-2.0-flash",
-        "gemini-2.5-flash",
-        "gemini-1.5-flash",
-        "gemini-1.5-flash-latest",
-        "gemini-1.5-pro"
-    ]
-    
-    last_err = None
-
-    for m in candidate_models:
-        for attempt in range(2):
-            try:
-                response = ai_client.models.generate_content(
-                    model=m,
-                    contents=[sys_prompt] + content_items,
-                    config=types.GenerateContentConfig(
-                        response_mime_type="application/json",
-                        response_schema=MiloPayload
-                    )
-                )
-                if response.parsed:
-                    return response.parsed
-                return MiloPayload.model_validate_json(response.text)
-            except Exception as e:
-                last_err = e
-                err_str = str(e).lower()
-                if any(x in err_str for x in ["503", "429", "resource_exhausted", "unavailable"]) and attempt < 1:
-                    time.sleep(2.0)
-                    continue
-                # If model is 404 on this key/endpoint, immediately try next candidate model
-                break
-
-    # If all models returned 404, provide explicit diagnostic guidance
-    if "404" in str(last_err):
-        st.error(
-            "⚠️ **API Key Configuration Error (404 NOT_FOUND)**\n\n"
-            "Your Google API Key does not have the **Generative Language API** enabled on its Google Cloud Project.\n\n"
-            "👉 **How to fix in 10 seconds:**\n"
-            "1. Visit [aistudio.google.com/apikey](https://aistudio.google.com/apikey)\n"
-            "2. Click **Create API key** (AI Studio keys have the API enabled by default).\n"
-            "3. Paste the new key into your Streamlit Cloud **Secrets** under `GEMINI_API_KEY`."
-        )
-    else:
-        st.error(f"MILO AI Error: {last_err}")
-    return None
-
-# 5. Header Logo
-logo_svg = """
-<div style="display:flex;align-items:center;margin-bottom:0.8rem;">
-  <svg width="200" height="65" viewBox="0 0 240 75" style="user-select:none;">
-    <text x="10" y="58" fill="#ffffff" font-family="Georgia,serif" font-size="58" font-weight="700" letter-spacing="3">MIL</text>
-    <text x="142" y="58" fill="#ffffff" font-family="Georgia,serif" font-size="58" font-weight="700">O</text>
-    <ellipse cx="172" cy="38" rx="36" ry="11" fill="none" stroke="#ffffff" stroke-width="1.2" transform="rotate(-22 172 38)"/>
-    <ellipse cx="172" cy="38" rx="36" ry="8" fill="none" stroke="#ffffff" stroke-width="0.9" transform="rotate(-15 172 38)"/>
-    <text x="132" y="52" fill="#ffffff" font-size="12">✦</text>
-    <text x="202" y="32" fill="#ffffff" font-size="12">✦</text>
-  </svg>
-</div>
-"""
-st.markdown(logo_svg, unsafe_allow_html=True)
-
-# 6. Centered Chat Bar
-_, chat_col, _ = st.columns([0.1, 3.8, 0.1])
-with chat_col:
-    prompt = st.chat_input(
-        "Ask MILO, paste lecture updates, or drop deadlines...",
-        accept_file="multiple",
-        file_type=["png", "jpg", "jpeg", "pdf", "txt"]
-    )
-    if "reply" in st.session_state and st.session_state["reply"]:
-        st.markdown(f"<div class='reply-txt'>{st.session_state['reply']}</div>", unsafe_allow_html=True)
-
-if prompt:
-    if isinstance(prompt, str):
-        txt, files = prompt, []
-    else:
-        txt = getattr(prompt, "text", "") or ""
-        files = getattr(prompt, "files", []) or []
-
-    if txt.strip() or files:
-        items = ["Today is " + date.today().isoformat() + ". Extract topics and dues. Set has_academic_content=False if casual chat."]
-        if txt.strip():
-            items.append(txt)
-        for f in files:
-            fname = getattr(f, "name", "").lower()
-            ftype = getattr(f, "type", "").lower()
-            if "image" in ftype or fname.endswith((".png", ".jpg", ".jpeg")):
-                items.append(Image.open(f))
-            elif "pdf" in ftype or fname.endswith(".pdf"):
-                reader = PdfReader(f)
-                items.append("\n".join([p.extract_text() or "" for p in reader.pages[:8]])[:5000])
-            else:
-                items.append(f.read().decode("utf-8")[:5000])
-        with st.spinner(""):
-            res = parse_with_milo(items)
-            if res is not None:
-                if not res.has_academic_content:
-                    st.session_state["reply"] = res.assistant_reply or "Hey! Send class notes or deadlines anytime."
-                else:
-                    st.session_state["reply"] = ""
-                    with sqlite3.connect(DB_FILE, check_same_thread=False) as conn:
-                        for t in res.topics:
-                            log_d = t.logged_date.strip() if t.logged_date and t.logged_date.strip() else str(date.today())
-                            conn.execute("INSERT INTO topics(subject,topic,module,logged_date) VALUES(?,?,?,?)", (t.subject, t.topic, t.module or "General", log_d))
-                        for d in res.dues:
-                            conn.execute("INSERT INTO dues(subject,task,due_date,status) VALUES(?,?,?,'Pending')", (d.subject, d.task, d.due_date or "TBD"))
-                st.rerun()
-
-st.write("")
-
-# 7. Main Dashboard Grid
-left, right = st.columns([1, 1.8], gap="large")
-
-# Left Column: Sticky Note
-with left:
-    with sqlite3.connect(DB_FILE, check_same_thread=False) as conn:
-        dues = pd.read_sql_query("SELECT * FROM dues WHERE status='Pending' ORDER BY due_date ASC LIMIT 5", conn)
-    rows = "".join([
-        f"<div class='sitem'><b>[{r['subject']}]</b> {r['task']}<br><span style='color:#dc2626'>Due: {r['due_date']}</span></div>"
-        for _, r in dues.iterrows()
-    ]) or "<div style='text-align:center;padding-top:70px'>No dues pending!</div>"
-    st.markdown(f"<div class='sticky'><div class='pin'></div><div class='stitle'>UPCOMING DUES</div>{rows}</div>", unsafe_allow_html=True)
-    if not dues.empty:
-        with st.expander("Mark Complete"):
-            for _, r in dues.iterrows():
-                row_id = int(r["id"])
-                if st.button(f"✓ {r['subject']}: {str(r['task'])[:15]}", key=f"d{row_id}", use_container_width=True):
-                    with sqlite3.connect(DB_FILE, check_same_thread=False) as conn:
-                        conn.execute("UPDATE dues SET status='Done' WHERE id=?", (row_id,))
-                    st.rerun()
-
-# Right Column: Discussion Slate with Native Border & Header Controls
-with right:
-    with st.container(border=True):
-        td = date.today()
-        mon = td
+        "Check notes for dates (e.g. 'yesterday', 'Oct 15'). Resolve into YYYY
