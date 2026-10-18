@@ -88,4 +88,138 @@ def parse_with_milo(content_items: list):
                     contents=[sys_prompt] + content_items,
                     config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=MiloPayload)
                 )
-                if response
+                if response.parsed:
+                    return response.parsed
+                return MiloPayload.model_validate_json(response.text)
+            except Exception as e:
+                if "503" in str(e) and attempt < 1:
+                    time.sleep(1.5)
+                    continue
+                break
+    st.error("Service busy, please retry in a moment.")
+    return None
+
+# Clean MILO vector logo header
+logo_svg = (
+    "<svg width='180' height='60' viewBox='0 0 240 75' style='user-select:none;display:block;margin-bottom:1rem'>"
+    "<text x='10' y='58' fill='#ffffff' font-family='Georgia,serif' font-size='58' font-weight='700' letter-spacing='3'>MIL</text>"
+    "<text x='142' y='58' fill='#ffffff' font-family='Georgia,serif' font-size='58' font-weight='700'>O</text>"
+    "<ellipse cx='172' cy='38' rx='36' ry='11' fill='none' stroke='#ffffff' stroke-width='1.2' transform='rotate(-22 172 38)'/>"
+    "<ellipse cx='172' cy='38' rx='36' ry='8' fill='none' stroke='#ffffff' stroke-width='0.9' transform='rotate(-15 172 38)'/>"
+    "<text x='132' y='52' fill='#ffffff' font-size='12'>✦</text>"
+    "<text x='202' y='32' fill='#ffffff' font-size='12'>✦</text>"
+    "</svg>"
+)
+st.markdown(logo_svg, unsafe_allow_html=True)
+
+# Centered Chat Bar
+_, chat_col, _ = st.columns([0.1, 3.8, 0.1])
+with chat_col:
+    prompt = st.chat_input(
+        "Ask MILO, paste lecture updates, or drop deadlines...",
+        accept_file="multiple",
+        file_type=["png", "jpg", "jpeg", "pdf", "txt"]
+    )
+    if "reply" in st.session_state and st.session_state["reply"]:
+        st.markdown(f"<div class='reply-txt'>{st.session_state['reply']}</div>", unsafe_allow_html=True)
+
+if prompt:
+    if isinstance(prompt, str):
+        txt, files = prompt, []
+    else:
+        txt = getattr(prompt, "text", "") or ""
+        files = getattr(prompt, "files", []) or []
+
+    if txt.strip() or files:
+        items = [f"Today is {date.today().isoformat()}. Extract topics and dues. Set has_academic_content=False if casual chat."]
+        if txt.strip():
+            items.append(txt)
+        for f in files:
+            fname = getattr(f, "name", "").lower()
+            ftype = getattr(f, "type", "").lower()
+            if "image" in ftype or fname.endswith((".png", ".jpg", ".jpeg")):
+                items.append(Image.open(f))
+            elif "pdf" in ftype or fname.endswith(".pdf"):
+                reader = PdfReader(f)
+                items.append("\n".join([p.extract_text() or "" for p in reader.pages[:8]])[:5000])
+            else:
+                items.append(f.read().decode("utf-8")[:5000])
+        with st.spinner(""):
+            res = parse_with_milo(items)
+            if res is not None:
+                if not res.has_academic_content:
+                    st.session_state["reply"] = res.assistant_reply or "Hey! Send class notes or deadlines anytime."
+                else:
+                    st.session_state["reply"] = ""
+                    with sqlite3.connect(DB_FILE) as conn:
+                        for t in res.topics:
+                            log_d = t.logged_date.strip() if t.logged_date and t.logged_date.strip() else str(date.today())
+                            conn.execute("INSERT INTO topics(subject,topic,module,logged_date) VALUES(?,?,?,?)", (t.subject, t.topic, t.module or "General", log_d))
+                        for d in res.dues:
+                            conn.execute("INSERT INTO dues(subject,task,due_date,status) VALUES(?,?,?,'Pending')", (d.subject, d.task, d.due_date or "TBD"))
+                st.rerun()
+
+st.write("")
+
+left, right = st.columns([1, 1.8], gap="large")
+
+with left:
+    with sqlite3.connect(DB_FILE) as conn:
+        dues = pd.read_sql_query("SELECT * FROM dues WHERE status='Pending' ORDER BY due_date ASC LIMIT 5", conn)
+    rows = "".join([
+        f"<div class='sitem'><b>[{r['subject']}]</b> {r['task']}<br><span style='color:#dc2626'>Due: {r['due_date']}</span></div>"
+        for _, r in dues.iterrows()
+    ]) or "<div style='text-align:center;padding-top:70px'>No dues pending!</div>"
+    st.markdown(f"<div class='sticky'><div class='pin'></div><div class='stitle'>UPCOMING DUES</div>{rows}</div>", unsafe_allow_html=True)
+    if not dues.empty:
+        with st.expander("Mark Complete"):
+            for _, r in dues.iterrows():
+                row_id = int(r["id"])
+                if st.button(f"✓ {r['subject']}: {str(r['task'])[:15]}", key=f"d{row_id}", use_container_width=True):
+                    with sqlite3.connect(DB_FILE) as conn:
+                        conn.execute("UPDATE dues SET status='Done' WHERE id=?", (row_id,))
+                    st.rerun()
+
+with right:
+    td = date.today()
+    mon = td - timedelta(days=td.weekday())
+    sun = mon + timedelta(days=6)
+    
+    sc1, sc2 = st.columns([1.2, 1.2])
+    with sc1:
+        mode = st.selectbox("View", ["Today's Discussion", "This Week (Mon - Sun)", "Custom Range"], label_visibility="collapsed")
+    
+    drange = None
+    if mode == "Custom Range":
+        with sc2:
+            drange = st.date_input("Date Range", value=(td - timedelta(days=7), td), max_value=td, label_visibility="collapsed")
+
+    with sqlite3.connect(DB_FILE) as conn:
+        if mode == "Today's Discussion":
+            df = pd.read_sql_query("SELECT * FROM topics WHERE logged_date=? ORDER BY id DESC", conn, params=(str(td),))
+        elif mode == "This Week (Mon - Sun)":
+            df = pd.read_sql_query("SELECT * FROM topics WHERE logged_date BETWEEN ? AND ? ORDER BY id DESC", conn, params=(str(mon), str(sun)))
+        else:
+            if drange and isinstance(drange, (tuple, list)):
+                s_d = drange[0]
+                e_d = drange[1] if len(drange) > 1 else s_d
+                df = pd.read_sql_query("SELECT * FROM topics WHERE logged_date BETWEEN ? AND ? ORDER BY logged_date DESC, id DESC", conn, params=(str(min(s_d, e_d)), str(max(s_d, e_d))))
+            else:
+                df = pd.DataFrame(columns=["subject", "topic", "module", "logged_date"])
+    
+    items_html = "".join([
+        f"<div style='margin-bottom:8px;border-bottom:1px solid #1e293b;padding-bottom:5px;font-size:0.86rem'>"
+        f"<b>[{r['subject']}]</b> ({r['module']}): {r['topic']} "
+        f"<small style='color:#64748b'>[{r['logged_date']}]</small></div>"
+        for _, r in df.iterrows()
+    ]) or "<p style='color:#64748b;padding-top:45px;text-align:center;font-size:0.88rem'>No discussions logged for this period yet.</p>"
+    
+    st.markdown(f"<div class='slate-box'><div class='scrollable-disc'>{items_html}</div></div>", unsafe_allow_html=True)
+
+st.write("")
+with st.expander("⚙️ Manage / Reset Database"):
+    if st.button("🗑️ Clear All Logged Topics", type="primary"):
+        with sqlite3.connect(DB_FILE) as conn:
+            conn.execute("DELETE FROM topics")
+        st.success("Cleared all topics!")
+        st.rerun()
