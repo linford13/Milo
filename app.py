@@ -136,24 +136,36 @@ def parse_with_milo(content_items: list):
         "If input is casual chat, set has_academic_content=False and write a friendly response in assistant_reply."
     ]
     sys_prompt = "\n".join(prompt_parts)
-    models = ["gemini-3.8-flash", "gemini-2.5-flash"]
+    
+    # Valid production Gemini models in fallback order
+    models = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
+    last_err = None
+
     for m in models:
         for attempt in range(2):
             try:
                 response = ai_client.models.generate_content(
                     model=m,
                     contents=[sys_prompt] + content_items,
-                    config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=MiloPayload)
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                        response_schema=MiloPayload
+                    )
                 )
                 if response.parsed:
                     return response.parsed
                 return MiloPayload.model_validate_json(response.text)
             except Exception as e:
-                if "503" in str(e) and attempt < 1:
-                    time.sleep(1.5)
+                last_err = e
+                err_str = str(e).lower()
+                # If capacity or rate limit issue, pause with backoff and retry
+                if any(x in err_str for x in ["503", "429", "unavailable", "resource_exhausted"]) and attempt < 1:
+                    time.sleep(2.0)
                     continue
+                # If model not supported or fatal error on this model, step to next model
                 break
-    st.error("Service busy, please retry in a moment.")
+
+    st.error(f"MILO AI Error: {last_err}")
     return None
 
 # Clean MILO logo header
@@ -262,24 +274,4 @@ with right:
             else:
                 if drange and isinstance(drange, (tuple, list)):
                     s_d = drange[0]
-                    e_d = drange[1] if len(drange) > 1 else s_d
-                    df = pd.read_sql_query("SELECT * FROM topics WHERE logged_date BETWEEN ? AND ? ORDER BY logged_date DESC, id DESC", conn, params=(str(min(s_d, e_d)), str(max(s_d, e_d))))
-                else:
-                    df = pd.DataFrame(columns=["subject", "topic", "module", "logged_date"])
-        
-        items_html = "".join([
-            f"<div style='margin-bottom:8px;border-bottom:1px solid #1e293b;padding-bottom:5px;font-size:0.86rem'>"
-            f"<b>[{r['subject']}]</b> ({r['module']}): {r['topic']} "
-            f"<small style='color:#64748b'>[{r['logged_date']}]</small></div>"
-            for _, r in df.iterrows()
-        ]) or "<p style='color:#64748b;padding-top:45px;text-align:center;font-size:0.88rem'>No discussions logged for this period yet.</p>"
-        
-        st.markdown(f"<div class='scrollable-disc'>{items_html}</div>", unsafe_allow_html=True)
-
-st.write("")
-with st.expander("⚙️ Manage / Reset Database"):
-    if st.button("🗑️ Clear All Logged Topics", type="primary"):
-        with sqlite3.connect(DB_FILE) as conn:
-            conn.execute("DELETE FROM topics")
-        st.success("Cleared all topics!")
-        st.rerun()
+                    e_d = drange[1] if len(drange) > 1 else s_
