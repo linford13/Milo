@@ -177,8 +177,7 @@ def parse_with_milo(content_items: list):
     sys_prompt = "\n".join(prompt_lines)
     cfg = types.GenerateContentConfig(response_mime_type="application/json")
 
-    # Ultra-fast execution targeting flash-lite directly
-    models_to_try = ["gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-2.0-flash-lite"]
+    models_to_try = ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-flash-latest"]
     last_error = ""
 
     for m in models_to_try:
@@ -447,7 +446,6 @@ with right:
             s_top = html.escape(str(r["topic"]))
             s_date = html.escape(str(r["logged_date"]))
             
-            # Adding an inline delete button per discussion item
             d_str = (
                 f"<div style='margin-bottom:8px; border-bottom:1px solid #1e293b; padding-bottom:5px; font-size:0.86rem; display:flex; justify-content:space-between; align-items:center;'>"
                 f"<div><b>[{s_subj}]</b> ({s_mod}): {s_top} <small style='color:#64748b'>[{s_date}]</small></div>"
