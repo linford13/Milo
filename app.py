@@ -148,46 +148,6 @@ with sqlite3.connect(DB_FILE) as conn:
     )
 
 
-@st.cache_resource(show_spinner=False)
-def get_available_models():
-    preferred = [
-        "gemini-2.5-flash",
-        "gemini-2.5-flash-lite",
-        "gemini-2.0-flash",
-        "gemini-2.0-flash-lite",
-        "gemini-flash-latest",
-    ]
-    skip_words = [
-        "embedding",
-        "tts",
-        "audio",
-        "image",
-        "vision",
-        "live",
-        "aqa",
-        "thinking",
-    ]
-    found = []
-    try:
-        for m in ai_client.models.list():
-            name = getattr(m, "name", "")
-            clean = name.replace("models/", "")
-            if "gemini" in clean:
-                if not any(w in clean.lower() for w in skip_words):
-                    found.append(clean)
-    except Exception:
-        pass
-
-    ordered = [p for p in preferred if p in found]
-    for f in found:
-        if "flash" in f and f not in ordered:
-        
-            ordered.append(f)
-    if not ordered:
-        ordered = preferred
-    return ordered
-
-
 def extract_json_dict(raw_text: str):
     cleaned = raw_text.strip()
     try:
@@ -203,55 +163,36 @@ def parse_with_milo(content_items: list):
     today_iso = date.today().isoformat()
     prompt_lines = [
         "Current Date: " + today_iso,
-        "You are MILO, a helpful AI study assistant and academic tracker for a college student.",
-        "Your goal is twofold:",
-        "1. Answer any study questions, explain doubts, or chat naturally. Put your main response/answer in 'assistant_reply'.",
-        "2. If the user input contains class notes, lecture updates, or assignments, extract them into 'topics' and 'dues'. If there are no notes/dues, leave those lists empty [] and just answer the question.",
+        "You are MILO, a fast, helpful AI study assistant and academic tracker for a college student.",
+        "1. Answer any study questions or chat naturally. Put your response in 'assistant_reply'.",
+        "2. If the user input contains class notes or assignments, extract them into 'topics' and 'dues'. Otherwise, leave them empty [].",
         "Return ONLY valid JSON matching this exact structure:",
         "{",
-        '  "assistant_reply": "Your conversational answer or explanation here",',
-        '  "topics": [',
-        '    {"subject": "str", "topic": "str", "module": "General", "logged_date": "YYYY-MM-DD"}',
-        "  ],",
-        '  "dues": [',
-        '    {"subject": "str", "task": "str", "due_date": "YYYY-MM-DD"}',
-        "  ]",
+        '  "assistant_reply": "Your brief, friendly answer here",',
+        '  "topics": [{"subject": "str", "topic": "str", "module": "General", "logged_date": "YYYY-MM-DD"}],',
+        '  "dues": [{"subject": "str", "task": "str", "due_date": "YYYY-MM-DD"}]',
         "}",
-        "Rules:",
-        "- Always provide a helpful explanation or friendly acknowledgment in 'assistant_reply'.",
-        f"- Default logged_date to {today_iso} if topics are found without dates.",
-        "- Use 'TBD' for due_date if unknown.",
+        f"Default logged_date to {today_iso} if topics are found without dates. Use 'TBD' for due_date if unknown.",
     ]
     sys_prompt = "\n".join(prompt_lines)
-    cfg = types.GenerateContentConfig(
-        response_mime_type="application/json"
-    )
+    cfg = types.GenerateContentConfig(response_mime_type="application/json")
 
+    # Ultra-fast execution targeting flash-lite directly
+    models_to_try = ["gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-2.0-flash-lite"]
     last_error = ""
-    for m in get_available_models():
-        for attempt in range(3):
-            try:
-                res = ai_client.models.generate_content(
-                    model=m,
-                    contents=[sys_prompt] + content_items,
-                    config=cfg,
-                )
-                if res and res.text:
-                    return extract_json_dict(res.text)
-            except Exception as err:
-                last_error = str(err)
-                err_up = last_error.upper()
-                is_busy = (
-                    "503" in last_error
-                    or "429" in last_error
-                    or "UNAVAILABLE" in err_up
-                    or "OVERLOADED" in err_up
-                    or "RESOURCE_EXHAUSTED" in err_up
-                )
-                if is_busy and attempt < 2:
-                    time.sleep(1.5 * (attempt + 1))
-                    continue
-                break
+
+    for m in models_to_try:
+        try:
+            res = ai_client.models.generate_content(
+                model=m,
+                contents=[sys_prompt] + content_items,
+                config=cfg,
+            )
+            if res and res.text:
+                return extract_json_dict(res.text)
+        except Exception as err:
+            last_error = str(err)
+            continue
 
     st.error("API Error: " + last_error)
     return None
@@ -309,9 +250,7 @@ if prompt:
                 pass
             fname = getattr(f, "name", "").lower()
             ftype = getattr(f, "type", "").lower()
-            is_img = "image" in ftype or fname.endswith(
-                (".png", ".jpg", ".jpeg")
-            )
+            is_img = "image" in ftype or fname.endswith((".png", ".jpg", ".jpeg"))
             if is_img:
                 try:
                     items.append(Image.open(f))
@@ -320,19 +259,14 @@ if prompt:
             elif "pdf" in ftype or fname.endswith(".pdf"):
                 try:
                     reader = PdfReader(f)
-                    pages_txt = [
-                        p.extract_text() or ""
-                        for p in reader.pages[:8]
-                    ]
+                    pages_txt = [p.extract_text() or "" for p in reader.pages[:8]]
                     items.append("\n".join(pages_txt)[:5000])
                 except Exception:
                     pass
             else:
                 try:
                     raw_bytes = f.read()
-                    items.append(
-                        raw_bytes.decode("utf-8", errors="ignore")[:5000]
-                    )
+                    items.append(raw_bytes.decode("utf-8", errors="ignore")[:5000])
                 except Exception:
                     pass
 
@@ -340,12 +274,10 @@ if prompt:
             with st.spinner("Thinking..."):
                 res = parse_with_milo(items)
                 if isinstance(res, dict):
-                    # Always display the conversational reply/answer
                     st.session_state["reply"] = res.get("assistant_reply") or "Done!"
-                    
                     topics_list = res.get("topics") or []
                     dues_list = res.get("dues") or []
-                    
+
                     if topics_list or dues_list:
                         with sqlite3.connect(DB_FILE) as conn:
                             for t in topics_list:
@@ -403,11 +335,7 @@ with left:
         row_list.append(item_str)
 
     if row_list:
-        rows_html = (
-            "<div class='sticky-list'>"
-            + "".join(row_list)
-            + "</div>"
-        )
+        rows_html = "<div class='sticky-list'>" + "".join(row_list) + "</div>"
     else:
         rows_html = (
             "<div style='text-align:center;padding-top:70px'>"
@@ -423,26 +351,17 @@ with left:
     st.markdown(sticky_html, unsafe_allow_html=True)
 
     if not dues.empty:
-        with st.expander("Mark Complete"):
+        with st.expander("Manage / Remove Pending Dues"):
             for _, r in dues.iterrows():
                 row_id = int(r["id"])
-                btn_lbl = (
-                    "✓ "
-                    + str(r["subject"])
-                    + ": "
-                    + str(r["task"])[:15]
-                )
-                if st.button(
-                    btn_lbl,
-                    key="d" + str(row_id),
-                    use_container_width=True,
-                ):
-                    with sqlite3.connect(DB_FILE) as conn:
-                        conn.execute(
-                            "UPDATE dues SET status='Done' WHERE id=?",
-                            (row_id,),
-                        )
-                    st.rerun()
+                col_d1, col_d2 = st.columns([3, 1])
+                with col_d1:
+                    st.write(f"**[{r['subject']}]** {r['task']} (Due: {r['due_date']})")
+                with col_d2:
+                    if st.button("🗑️", key=f"del_due_{row_id}", use_container_width=True):
+                        with sqlite3.connect(DB_FILE) as conn:
+                            conn.execute("DELETE FROM dues WHERE id=?", (row_id,))
+                        st.rerun()
 
 with right:
     with st.container(border=True):
@@ -451,7 +370,6 @@ with right:
             unsafe_allow_html=True,
         )
         td = date.today()
-        # Correct calculation for Monday to Sunday of the current week
         mon = td - timedelta(days=td.weekday())
         sun = mon + timedelta(days=6)
 
@@ -513,6 +431,7 @@ with right:
                     )
                 else:
                     cols = [
+                        "id",
                         "subject",
                         "topic",
                         "module",
@@ -522,54 +441,69 @@ with right:
 
         disc_list = []
         for _, r in df.iterrows():
+            row_id = int(r["id"])
             s_subj = html.escape(str(r["subject"]))
             s_mod = html.escape(str(r["module"]))
             s_top = html.escape(str(r["topic"]))
             s_date = html.escape(str(r["logged_date"]))
+            
+            # Adding an inline delete button per discussion item
             d_str = (
-                "<div style='margin-bottom:8px;"
-                "border-bottom:1px solid #1e293b;"
-                "padding-bottom:5px;font-size:0.86rem'>"
-                "<b>["
-                + s_subj
-                + "]</b> ("
-                + s_mod
-                + "): "
-                + s_top
-                + " <small style='color:#64748b'>["
-                + s_date
-                + "]</small></div>"
+                f"<div style='margin-bottom:8px; border-bottom:1px solid #1e293b; padding-bottom:5px; font-size:0.86rem; display:flex; justify-content:space-between; align-items:center;'>"
+                f"<div><b>[{s_subj}]</b> ({s_mod}): {s_top} <small style='color:#64748b'>[{s_date}]</small></div>"
+                f"</div>"
             )
-            disc_list.append(d_str)
+            disc_list.append((row_id, d_str))
 
         if disc_list:
-            items_html = "".join(disc_list)
+            scroll_container = "<div class='scrollable-disc'>"
+            st.markdown(scroll_container, unsafe_allow_html=True)
+            for r_id, d_html in disc_list:
+                col_item, col_del = st.columns([5, 0.6])
+                with col_item:
+                    st.markdown(d_html, unsafe_allow_html=True)
+                with col_del:
+                    if st.button("🗑️", key=f"del_top_{r_id}", use_container_width=True):
+                        with sqlite3.connect(DB_FILE) as conn:
+                            conn.execute("DELETE FROM topics WHERE id=?", (r_id,))
+                        st.rerun()
+            st.markdown("</div>", unsafe_allow_html=True)
         else:
             items_html = (
                 "<p style='color:#64748b;padding-top:45px;"
                 "text-align:center;font-size:0.88rem'>"
                 "No discussions logged for this period yet.</p>"
             )
-
-        slate_html = (
-            "<div class='scrollable-disc'>"
-            + items_html
-            + "</div>"
-        )
-        st.markdown(slate_html, unsafe_allow_html=True)
+            slate_html = (
+                "<div class='scrollable-disc'>"
+                + items_html
+                + "</div>"
+            )
+            st.markdown(slate_html, unsafe_allow_html=True)
 
 st.write("")
-with st.expander("⚙️ Manage / Reset Database"):
-    c_res1, c_res2 = st.columns(2)
-    with c_res1:
-        if st.button("🗑️ Clear Entire Discussion History", type="primary", use_container_width=True):
-            with sqlite3.connect(DB_FILE) as conn:
-                conn.execute("DELETE FROM topics")
-            st.success("Cleared all discussion history!")
-            st.rerun()
-    with c_res2:
-        if st.button("🗑️ Clear All Pending Dues", use_container_width=True):
-            with sqlite3.connect(DB_FILE) as conn:
-                conn.execute("DELETE FROM dues")
-            st.success("Cleared all dues!")
-            st.rerun()
+with st.expander("⚙️ Manual Catch-up Entry"):
+    st.markdown("### ✍️ Add Missed Data Manually")
+    with st.form("manual_entry_form"):
+        m_col1, m_col2, m_col3 = st.columns(3)
+        with m_col1:
+            m_date = st.date_input("Date of Lecture", value=date.today())
+        with m_col2:
+            m_subj = st.text_input("Subject", placeholder="e.g., Mathematics")
+        with m_col3:
+            m_mod = st.text_input("Module", placeholder="e.g., Module 2")
+        
+        m_top = st.text_area("Topic / Notes Details", placeholder="What was covered?")
+        
+        submit_manual = st.form_submit_button("➕ Save Missed Topic")
+        if submit_manual:
+            if m_subj.strip() and m_top.strip():
+                with sqlite3.connect(DB_FILE) as conn:
+                    conn.execute(
+                        "INSERT INTO topics(subject, topic, module, logged_date) VALUES(?,?,?,?)",
+                        (m_subj.strip(), m_top.strip(), m_mod.strip() or "General", str(m_date))
+                    )
+                st.success(f"Successfully added missed topic for {m_date}!")
+                st.rerun()
+            else:
+                st.warning("Please fill in both Subject and Topic notes.")
