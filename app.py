@@ -1,7 +1,6 @@
 import os
 import json
 import re
-import time
 import html
 import sqlite3
 from datetime import date, timedelta
@@ -156,52 +155,46 @@ def extract_json_dict(raw_text: str):
         match = re.search(r"\{.*\}", cleaned, re.DOTALL)
         if match:
             return json.loads(match.group(0))
-        raise
+        # Fallback dictionary if JSON parsing fails completely
+        return {
+            "assistant_reply": raw_text[:300],
+            "topics": [],
+            "dues": []
+        }
 
 
 def parse_with_milo(content_items: list):
     today_iso = date.today().isoformat()
     prompt_lines = [
         "Current Date: " + today_iso,
-        "You are MILO, a fast, helpful AI study assistant and academic tracker for a college student.",
-        "1. Answer any study questions or chat naturally. Put your response in 'assistant_reply'.",
+        "You are MILO, a fast AI study assistant for a college student.",
+        "1. Answer any study questions or chat naturally in 'assistant_reply'.",
         "2. If the user input contains class notes or assignments, extract them into 'topics' and 'dues'. Otherwise, leave them empty [].",
         "Return ONLY valid JSON matching this exact structure:",
         "{",
-        '  "assistant_reply": "Your brief, friendly answer here",',
+        '  "assistant_reply": "Your brief answer here",',
         '  "topics": [{"subject": "str", "topic": "str", "module": "General", "logged_date": "YYYY-MM-DD"}],',
         '  "dues": [{"subject": "str", "task": "str", "due_date": "YYYY-MM-DD"}]',
         "}",
-        f"Default logged_date to {today_iso} if topics are found without dates. Use 'TBD' for due_date if unknown.",
+        f"Default logged_date to {today_iso} if topics lack dates. Use 'TBD' for due_date if unknown.",
     ]
     sys_prompt = "\n".join(prompt_lines)
     cfg = types.GenerateContentConfig(response_mime_type="application/json")
 
-    models_to_try = [
-        "gemini-2.5-flash",
-        "gemini-2.5-flash-lite",
-        "gemini-flash-latest",
-        "gemini-2.5-pro"
-    ]
-
-    for m in models_to_try:
-        for attempt in range(2):
-            try:
-                res = ai_client.models.generate_content(
-                    model=m,
-                    contents=[sys_prompt] + content_items,
-                    config=cfg,
-                )
-                if res and res.text:
-                    return extract_json_dict(res.text)
-            except Exception as err:
-                err_str = str(err)
-                if "503" in err_str or "UNAVAILABLE" in err_str.upper():
-                    time.sleep(1)
-                    continue
-                break
-
-    st.error("Service is temporarily busy (503). Please try your request again in a few seconds.")
+    try:
+        res = ai_client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=[sys_prompt] + content_items,
+            config=cfg,
+        )
+        if res and res.text:
+            return extract_json_dict(res.text)
+    except Exception as err:
+        return {
+            "assistant_reply": f"Received your message! (Note: AI service busy: {str(err)[:50]})",
+            "topics": [],
+            "dues": []
+        }
     return None
 
 
