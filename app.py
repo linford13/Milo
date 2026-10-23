@@ -16,7 +16,9 @@ from google.genai import types, errors
 
 # ───────────────────────── Config ─────────────────────────
 DB_FILE = "milo_study.db"
-MODELS = ["gemini-2.5-flash", "gemini-2.5-flash-lite"]  # primary, then fallback
+# gemini-2.5-* were retired in Oct 2026; 3.x are the current replacements.
+# Override without editing code: add GEMINI_MODELS = "model-a, model-b" to Streamlit secrets.
+DEFAULT_MODELS = ["gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-3-flash-preview"]
 REVISION_GAPS = [1, 3, 7, 14, 30]  # spaced-repetition checkpoints (days)
 MAX_PDF_PAGES = 15
 MAX_TEXT_CHARS = 12000
@@ -106,6 +108,14 @@ if not raw_key:
     st.error("Missing GEMINI_API_KEY. Add it to Streamlit secrets or your environment.")
     st.stop()
 api_key = str(raw_key).strip().strip('"').strip("'")
+
+MODELS = list(DEFAULT_MODELS)
+try:
+    _override = st.secrets.get("GEMINI_MODELS") or os.getenv("GEMINI_MODELS")
+except Exception:
+    _override = os.getenv("GEMINI_MODELS")
+if _override:
+    MODELS = [m.strip() for m in str(_override).split(",") if m.strip()]
 
 
 @st.cache_resource
@@ -232,37 +242,66 @@ class Quiz(BaseModel):
     questions: list[QuizQuestion]
 
 
-def call_gemini(contents, schema=None, system=None, temperature=0.4):
-    """Retry on 503/429 with backoff, then fall back to a lighter model.
-    Returns (response, error_message)."""
-    cfg = types.GenerateContentConfig(
-        system_instruction=system,
-        temperature=temperature,
-        response_mime_type="application/json" if schema else None,
-        response_schema=schema,
-    )
-    last_err = "unknown error"
-    for model in MODELS:
+@st.cache_data(ttl=86400, show_spinner=False)
+def discover_models(key: str):
+    """Last resort: ask the API which flash models exist. Cached for a day, runs only if every
+    configured model failed, so it can never loop or slow normal use."""
+    try:
+        bad = ("image", "live", "audio", "tts", "embed", "robotics", "computer", "native")
+        found = []
+        for m in get_client(key).models.list():
+            name = (m.name or "").replace("models/", "")
+            actions = getattr(m, "supported_actions", None) or []
+            if name.startswith("gemini-") and "flash" in name and "generateContent" in actions \
+                    and not any(b in name for b in bad):
+                found.append(name)
+        return sorted(found, reverse=True)[:4]
+    except Exception:
+        return []
+
+
+def _try_models(models, contents, cfg, errs):
+    for model in models:
         for attempt in range(3):
             try:
                 res = client.models.generate_content(model=model, contents=contents, config=cfg)
                 if res and res.text:
-                    return res, None
-                last_err = "empty response"
+                    return res
+                errs[model] = "empty response"
                 break
-            except errors.ServerError as e:  # 5xx, including 503 overload
-                last_err = f"{model}: server busy ({getattr(e, 'code', '5xx')})"
+            except errors.ServerError as e:  # 5xx incl. 503 overload: retry with backoff
+                errs[model] = f"{getattr(e, 'code', '5xx')} busy"
                 time.sleep(2**attempt)
             except errors.ClientError as e:
-                last_err = f"{model}: {getattr(e, 'code', '4xx')}"
-                if getattr(e, "code", None) == 429:  # rate limit: wait and retry
+                code = getattr(e, "code", "4xx")
+                errs[model] = f"{code} {str(getattr(e, 'message', e))[:60]}"
+                if code == 429:  # rate limit: wait and retry
                     time.sleep(2**attempt)
                     continue
-                break  # 404 / 400: try next model
+                break  # 404 / 400 / 403: this model is not usable, go to the next
             except Exception as e:  # network etc.
-                last_err = f"{model}: {str(e)[:60]}"
+                errs[model] = str(e)[:60]
                 break
-    return None, last_err
+    return None
+
+
+def call_gemini(contents, schema=None, system=None):
+    """Retry 503/429 with backoff, fall through the model list, then try discovered models.
+    Returns (response, error_summary)."""
+    cfg = types.GenerateContentConfig(
+        system_instruction=system,
+        response_mime_type="application/json" if schema else None,
+        response_schema=schema,
+    )
+    errs = {}
+    res = _try_models(MODELS, contents, cfg, errs)
+    if res is None and any(str(v).startswith("404") for v in errs.values()):
+        extra = [m for m in discover_models(api_key) if m not in MODELS]
+        if extra:
+            res = _try_models(extra, contents, cfg, errs)
+    if res is not None:
+        return res, None
+    return None, " | ".join(f"{m}: {e}" for m, e in errs.items()) or "unknown error"
 
 
 def parse_struct(res, schema):
@@ -613,7 +652,6 @@ with tab_study:
                     ],
                     schema=Quiz,
                     system="You are a rigorous but friendly examiner. Only use the topics provided.",
-                    temperature=0.7,
                 )
             quiz = parse_struct(res, Quiz) if res else None
             if quiz and quiz.questions:
