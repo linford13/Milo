@@ -1,6 +1,6 @@
 import os
-import re
 import json
+import re
 import time
 import html
 import sqlite3
@@ -51,9 +51,10 @@ css_rules = [
     "[data-testid='stChatInput'] button {",
     "  color: #18181b !important;",
     "}",
-    ".reply-txt {",
-    "  text-align: center; color: #e2e8f0; font-size: 0.95rem;",
-    "  margin: 0 auto 1rem auto; max-width: 820px;",
+    ".reply-box {",
+    "  background: #1e293b; border: 1px solid #334155;",
+    "  padding: 12px 18px; border-radius: 16px; color: #f8fafc;",
+    "  font-size: 0.95rem; margin: 0 auto 1rem auto; max-width: 820px;",
     "}",
     ".sticky {",
     "  position: relative; background: #fbf7dc; color: #27272a;",
@@ -180,6 +181,7 @@ def get_available_models():
     ordered = [p for p in preferred if p in found]
     for f in found:
         if "flash" in f and f not in ordered:
+        
             ordered.append(f)
     if not ordered:
         ordered = preferred
@@ -201,26 +203,24 @@ def parse_with_milo(content_items: list):
     today_iso = date.today().isoformat()
     prompt_lines = [
         "Current Date: " + today_iso,
-        "You are MILO, an academic tracker for a college student.",
+        "You are MILO, a helpful AI study assistant and academic tracker for a college student.",
+        "Your goal is twofold:",
+        "1. Answer any study questions, explain doubts, or chat naturally. Put your main response/answer in 'assistant_reply'.",
+        "2. If the user input contains class notes, lecture updates, or assignments, extract them into 'topics' and 'dues'. If there are no notes/dues, leave those lists empty [] and just answer the question.",
         "Return ONLY valid JSON matching this exact structure:",
         "{",
-        '  "has_academic_content": true,',
-        '  "assistant_reply": "",',
+        '  "assistant_reply": "Your conversational answer or explanation here",',
         '  "topics": [',
-        '    {"subject": "str", "topic": "str",',
-        '     "module": "General", "logged_date": "YYYY-MM-DD"}',
+        '    {"subject": "str", "topic": "str", "module": "General", "logged_date": "YYYY-MM-DD"}',
         "  ],",
         '  "dues": [',
-        '    {"subject": "str", "task": "str",',
-        '     "due_date": "YYYY-MM-DD"}',
+        '    {"subject": "str", "task": "str", "due_date": "YYYY-MM-DD"}',
         "  ]",
         "}",
         "Rules:",
-        "1. Use 'General' if module is unknown.",
-        "2. Default logged_date to " + today_iso + " if none.",
-        "3. Use 'TBD' for due_date if unknown.",
-        "4. If casual chat, set has_academic_content to false",
-        "   and write a friendly reply in assistant_reply.",
+        "- Always provide a helpful explanation or friendly acknowledgment in 'assistant_reply'.",
+        f"- Default logged_date to {today_iso} if topics are found without dates.",
+        "- Use 'TBD' for due_date if unknown.",
     ]
     sys_prompt = "\n".join(prompt_lines)
     cfg = types.GenerateContentConfig(
@@ -279,14 +279,14 @@ st.markdown("".join(logo_lines), unsafe_allow_html=True)
 _, chat_col, _ = st.columns([0.1, 3.8, 0.1])
 with chat_col:
     prompt = st.chat_input(
-        "Ask MILO, paste lecture updates, or drop deadlines...",
+        "Ask a doubt, paste lecture notes, or drop deadlines...",
         accept_file="multiple",
         file_type=["png", "jpg", "jpeg", "pdf", "txt"],
     )
     if st.session_state.get("reply"):
         safe_reply = html.escape(str(st.session_state["reply"]))
         reply_html = (
-            "<div class='reply-txt'>" + safe_reply + "</div>"
+            "<div class='reply-box'>💡 <b>MILO:</b> " + safe_reply + "</div>"
         )
         st.markdown(reply_html, unsafe_allow_html=True)
 
@@ -337,66 +337,39 @@ if prompt:
                     pass
 
         if items:
-            with st.spinner(""):
+            with st.spinner("Thinking..."):
                 res = parse_with_milo(items)
                 if isinstance(res, dict):
-                    has_acad = bool(res.get("has_academic_content"))
-                    if not has_acad:
-                        default_msg = (
-                            "Hey! Send class notes or deadlines anytime."
-                        )
-                        st.session_state["reply"] = (
-                            res.get("assistant_reply") or default_msg
-                        )
-                    else:
-                        st.session_state["reply"] = ""
-                        topics_list = res.get("topics") or []
-                        dues_list = res.get("dues") or []
+                    # Always display the conversational reply/answer
+                    st.session_state["reply"] = res.get("assistant_reply") or "Done!"
+                    
+                    topics_list = res.get("topics") or []
+                    dues_list = res.get("dues") or []
+                    
+                    if topics_list or dues_list:
                         with sqlite3.connect(DB_FILE) as conn:
                             for t in topics_list:
                                 if not isinstance(t, dict):
                                     continue
-                                subj = str(
-                                    t.get("subject") or "General"
-                                ).strip()
-                                top = str(
-                                    t.get("topic") or ""
-                                ).strip()
-                                mod = str(
-                                    t.get("module") or "General"
-                                ).strip()
-                                raw_d = str(
-                                    t.get("logged_date") or ""
-                                ).strip()
-                                log_d = (
-                                    raw_d
-                                    if raw_d
-                                    else str(date.today())
-                                )
+                                subj = str(t.get("subject") or "General").strip()
+                                top = str(t.get("topic") or "").strip()
+                                mod = str(t.get("module") or "General").strip()
+                                raw_d = str(t.get("logged_date") or "").strip()
+                                log_d = raw_d if raw_d else str(date.today())
                                 if top:
                                     conn.execute(
-                                        "INSERT INTO topics"
-                                        "(subject,topic,module,logged_date)"
-                                        " VALUES(?,?,?,?)",
+                                        "INSERT INTO topics(subject,topic,module,logged_date) VALUES(?,?,?,?)",
                                         (subj, top, mod, log_d),
                                     )
                             for d in dues_list:
                                 if not isinstance(d, dict):
                                     continue
-                                subj = str(
-                                    d.get("subject") or "General"
-                                ).strip()
-                                task = str(
-                                    d.get("task") or ""
-                                ).strip()
-                                due_val = str(
-                                    d.get("due_date") or "TBD"
-                                ).strip()
+                                subj = str(d.get("subject") or "General").strip()
+                                task = str(d.get("task") or "").strip()
+                                due_val = str(d.get("due_date") or "TBD").strip()
                                 if task:
                                     conn.execute(
-                                        "INSERT INTO dues"
-                                        "(subject,task,due_date,status)"
-                                        " VALUES(?,?,?,'Pending')",
+                                        "INSERT INTO dues(subject,task,due_date,status) VALUES(?,?,?,'Pending')",
                                         (subj, task, due_val),
                                     )
                     st.rerun()
@@ -478,6 +451,7 @@ with right:
             unsafe_allow_html=True,
         )
         td = date.today()
+        # Correct calculation for Monday to Sunday of the current week
         mon = td - timedelta(days=td.weekday())
         sun = mon + timedelta(days=6)
 
@@ -586,8 +560,16 @@ with right:
 
 st.write("")
 with st.expander("⚙️ Manage / Reset Database"):
-    if st.button("🗑️ Clear All Logged Topics", type="primary"):
-        with sqlite3.connect(DB_FILE) as conn:
-            conn.execute("DELETE FROM topics")
-        st.success("Cleared all topics!")
-        st.rerun()
+    c_res1, c_res2 = st.columns(2)
+    with c_res1:
+        if st.button("🗑️ Clear Entire Discussion History", type="primary", use_container_width=True):
+            with sqlite3.connect(DB_FILE) as conn:
+                conn.execute("DELETE FROM topics")
+            st.success("Cleared all discussion history!")
+            st.rerun()
+    with c_res2:
+        if st.button("🗑️ Clear All Pending Dues", use_container_width=True):
+            with sqlite3.connect(DB_FILE) as conn:
+                conn.execute("DELETE FROM dues")
+            st.success("Cleared all dues!")
+            st.rerun()
